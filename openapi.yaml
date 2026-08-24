@@ -1,0 +1,86 @@
+openapi: 3.0.3
+info:
+  title: ms-trunk-service-back API
+  description: >-
+    Contrato de ejemplo del microservicio trunk-service.
+    Documenta los healthchecks base (`/`, `/live`, `/ready`).
+    Actualiza este archivo cuando agregues nuevos endpoints.
+  version: 1.0.0
+servers:
+  - url: /
+paths:
+  /:
+    get:
+      summary: Root
+      description: Respuesta básica del servicio e información de healthchecks.
+      operationId: getRoot
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  service:
+                    type: string
+                  message:
+                    type: string
+                    example: ok
+                  healthchecks:
+                    type: object
+                    properties:
+                      live:
+                        type: string
+                        example: /live
+                      ready:
+                        type: string
+                        example: /ready
+  /live:
+    get:
+      summary: Liveness
+      description: Indica que el proceso está vivo.
+      operationId: getLive
+      responses:
+        '200':
+          description: Proceso vivo
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: alive
+                  service:
+                    type: string
+  /ready:
+    get:
+      summary: Readiness
+      description: Indica si el servicio está listo para recibir tráfico.
+      operationId: getReady
+      responses:
+        '200':
+          description: Listo para tráfico
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ready
+                  service:
+                    type: string
+        '503':
+          description: Aún no listo
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: not_ready
+                  service:
+                    type: string

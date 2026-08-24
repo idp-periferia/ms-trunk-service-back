@@ -1,0 +1,46 @@
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: ms-trunk-service-back
+  title: trunk-service (nodejs)
+  description: 
+  tags:
+    - aws
+    - ci-cd
+    - codepipeline
+    - codebuild
+    - nodejs
+  annotations:
+    aws.amazon.com/codecommit-repository: ms-trunk-service-back
+    aws.amazon.com/ecr-repository: ms-trunk-service-back
+    aws.amazon.com/region: us-east-2
+    aws.amazon.com/account-id: 039438367923
+    backstage.io/kubernetes-id: ms-trunk-service-back
+    backstage.io/kubernetes-namespace: production
+    backstage.io/kubernetes-label-selector: app=ms-trunk-service-back
+spec:
+  type: service
+  owner: platform-team
+  lifecycle: production
+  system: aws-platform
+  providesApis:
+    - ms-trunk-service-back-api
+
+---
+apiVersion: backstage.io/v1alpha1
+kind: API
+metadata:
+  name: ms-trunk-service-back-api
+  title: trunk-service API
+  description: API OpenAPI del microservicio ms-trunk-service-back
+  tags:
+    - aws
+    - openapi
+    - nodejs
+spec:
+  type: openapi
+  lifecycle: production
+  owner: platform-team
+  system: aws-platform
+  definition:
+    $text: ./openapi.yaml

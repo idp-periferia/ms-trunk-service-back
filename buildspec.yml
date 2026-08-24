@@ -1,0 +1,114 @@
+version: 0.2
+
+env:
+  variables:
+    PROJECT_NAME: "trunk-service"
+    REPOSITORY_NAME: "ms-trunk-service-back"
+    LANGUAGE: "nodejs"
+
+phases:
+  install:
+    runtime-versions:
+      nodejs: 18
+    commands:
+      - npm ci
+
+  build:
+    commands:
+      - npm test
+      - npm run build
+      - echo "Running security scan"
+      - npm audit || true
+      - docker build -t "ms-trunk-service-back:latest" .
+
+  post_build:
+    commands:
+      - echo "Build completed on $(date)"
+      - echo "Publishing image to ECR 039438367923.dkr.ecr.us-east-2.amazonaws.com/ms-trunk-service-back"
+      - aws ecr get-login-password --region us-east-2 | docker login --username AWS --password-stdin 039438367923.dkr.ecr.us-east-2.amazonaws.com
+      - docker tag "ms-trunk-service-back:latest" "039438367923.dkr.ecr.us-east-2.amazonaws.com/ms-trunk-service-back:$CODEBUILD_BUILD_NUMBER"
+      - docker tag "ms-trunk-service-back:latest" "039438367923.dkr.ecr.us-east-2.amazonaws.com/ms-trunk-service-back:latest"
+      - docker push "039438367923.dkr.ecr.us-east-2.amazonaws.com/ms-trunk-service-back:$CODEBUILD_BUILD_NUMBER"
+      - docker push "039438367923.dkr.ecr.us-east-2.amazonaws.com/ms-trunk-service-back:latest"
+      - echo "Desplegando en EKS (terraform apply tras push a ECR)..."
+      - curl -fsSL "https://releases.hashicorp.com/terraform/1.9.8/terraform_1.9.8_linux_amd64.zip" -o /tmp/terraform.zip
+      - unzip -o /tmp/terraform.zip -d /usr/local/bin
+      - terraform version
+      - |
+        set -euxo pipefail
+        if [ -z "${GITHUB_TOKEN:-}" ]; then
+          echo "GITHUB_TOKEN no disponible en CodeBuild. Ejecuta el template con origen GitHub y generate-terraform."
+          exit 1
+        fi
+        git config --global url."https://x-access-token:${GITHUB_TOKEN}@github.com/".insteadOf "https://github.com/"
+        resolve_deploy_branch() {
+          if [ -n "${IDP_DEPLOY_BRANCH:-}" ]; then
+            echo "$IDP_DEPLOY_BRANCH"
+            return
+          fi
+          case "${CODEBUILD_PROJECT_NAME:-}" in
+            *-dev)  echo develop; return ;;
+            *-qa)   echo release; return ;;
+            *-prod) echo main; return ;;
+          esac
+          local webhook_ref="${CODEBUILD_WEBHOOK_HEAD_REF:-}"
+          local branch="${webhook_ref#refs/heads/}"
+          if [ -n "$branch" ] && [ "$branch" != "$webhook_ref" ]; then
+            echo "$branch"
+            return
+          fi
+          local src="${CODEBUILD_SOURCE_VERSION:-}"
+          if [ -n "$src" ] && ! echo "$src" | grep -qE '^arn:'; then
+            branch="${src#refs/heads/}"
+            if [ "$branch" != "$src" ]; then
+              echo "$branch"
+              return
+            fi
+            if echo "$src" | grep -qE '^[0-9a-f]{40}$'; then
+              echo develop
+              return
+            fi
+          fi
+          echo develop
+        }
+        BRANCH="$(resolve_deploy_branch)"
+        echo "Rama detectada para EKS: ${BRANCH} (proyecto=${CODEBUILD_PROJECT_NAME:-n/a})"
+        case "$BRANCH" in
+          develop) STACK_PREFIX="microservices/develop" ;;
+          release) STACK_PREFIX="microservices/staging" ;;
+          main) STACK_PREFIX="microservices/production" ;;
+          *)
+            echo "Rama '${BRANCH}' no mapeada a stack EKS; omitiendo terraform apply."
+            exit 0
+            ;;
+        esac
+        STACK_PATH="${STACK_PREFIX}/${REPOSITORY_NAME}"
+        STATE_KEY="${STACK_PATH}/terraform.tfstate"
+        CLUSTER_DIR="/tmp/cluster-iac"
+        rm -rf "$CLUSTER_DIR"
+        git clone --branch "main" --depth 1 \
+          "https://x-access-token:${GITHUB_TOKEN}@github.com/idp-periferia/repos-microservices-cluster.git" \
+          "$CLUSTER_DIR"
+        cd "$CLUSTER_DIR/$STACK_PATH"
+        if [ ! -f main.tf ]; then
+          echo "No existe stack $STACK_PATH en repos-microservices-cluster (GitHub)."
+          find "$CLUSTER_DIR/microservices" -maxdepth 4 -type f -name 'main.tf' 2>/dev/null | head -20 || true
+          exit 1
+        fi
+        echo "Stack EKS: $STACK_PATH | state s3://prueba-bucket-publico-2/${STATE_KEY}"
+        TF_AWS_REGION="us-east-2"
+        if [ -z "$TF_AWS_REGION" ]; then
+          echo "ERROR: región AWS vacía en buildspec (eksClusterRegion/awsRegion). Revisa EKS_CLUSTER_REGION o AWS_REGION en el IDP."
+          exit 1
+        fi
+        INIT_ARGS="-input=false -backend-config=bucket=prueba-bucket-publico-2 -backend-config=key=${STATE_KEY} -backend-config=region=${TF_AWS_REGION} -backend-config=encrypt=true"
+        echo "=== terraform init ==="
+        terraform init $INIT_ARGS 2>&1 | tee /tmp/tf-init.log
+        if [ -f terraform.tfvars ] && grep -q '^image_tag' terraform.tfvars; then
+          sed -i "s/^image_tag.*/image_tag = \"${CODEBUILD_BUILD_NUMBER}\"/" terraform.tfvars
+        fi
+        export AWS_DEFAULT_REGION="$TF_AWS_REGION"
+        export AWS_REGION="$TF_AWS_REGION"
+        echo "=== terraform apply (region=$TF_AWS_REGION) ==="
+        terraform apply -auto-approve -input=false 2>&1 | tee /tmp/tf-apply.log
+        echo "Despliegue EKS aplicado: $STACK_PATH"
